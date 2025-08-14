@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   ScrollView
 } from 'react-native';
+import * as Speech from 'expo-speech';
 
 const BrailleKeyboard = () => {
   const [currentDisplay, setCurrentDisplay] = useState('a');
@@ -127,11 +128,53 @@ const BrailleKeyboard = () => {
     }
   };
 
-  // Add a space to the typed text
+  // Add a space to the typed text and provide TTS feedback
   const addSpace = () => {
+    // 🚨 NEW LOGIC: Speak the last word before adding the space
+    const trimmedText = typedText.trim();
+    if (trimmedText.length > 0) {
+      const lastSpaceIndex = trimmedText.lastIndexOf(' ');
+      const lastWord = lastSpaceIndex === -1 ? trimmedText : trimmedText.substring(lastSpaceIndex + 1);
+      
+      if (lastWord.length > 0) {
+        speakMessage(lastWord);
+      }
+    }
+
     setTypedText(typedText + ' ');
     // Provide space vibration feedback
     Vibration.vibrate([50, 30, 50]);
+  };
+  
+  // NEW FUNCTIONALITY: Delete the last character or word from typedText
+  // Tapping deletes the last word.
+  const deleteLastWord = () => {
+    if (typedText.length > 0) {
+      // Trim any trailing spaces, then split into words
+      const words = typedText.trim().split(' ');
+      // Remove the last word
+      words.pop();
+      // Join the remaining words back with a space
+      const newText = words.join(' ');
+      // Set the new text, and add a space if there's still text
+      setTypedText(newText + (newText.length > 0 ? ' ' : ''));
+      Vibration.vibrate(100); // Short vibration for deleting a word
+    }
+  };
+
+  // NEW FUNCTIONALITY: Clear all typed text with a long press
+  const clearAllText = () => {
+    setTypedText('');
+    Vibration.vibrate([50, 50, 50]); // A unique, fast vibration for clearing all text
+  };
+
+  // Function to convert text to speech
+  const speakMessage = (message) => {
+    if (message && message.length > 0) {
+      Speech.speak(message, {
+        language: 'en-US',
+      });
+    }
   };
 
   // Submit the current text to the chatbot
@@ -139,9 +182,12 @@ const BrailleKeyboard = () => {
     if (typedText.trim() === '') return;
     
     // Add user message to chat
+    const userMessage = { role: 'user', content: typedText };
+    const systemMessage = { role: 'system', content: "You are a helpful assistant for blind users. Keep your responses clear, concise, and easy to understand through a screen reader." };
+    
     const newMessages = [
       ...messages,
-      { role: 'user', content: typedText }
+      userMessage
     ];
     setMessages(newMessages);
     
@@ -152,49 +198,56 @@ const BrailleKeyboard = () => {
     setIsLoading(true);
     
     try {
-      // Make API call to ChatGPT
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      // Make API call to OpenAI's Chat Completion API
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': 'its hidden',
-          'anthropic-version': '2023-06-01'
+          'Authorization': `Bearer YOUR_OPENAI_API_KEY_HERE` // 🚨 PASTE YOUR KEY HERE
         },
         body: JSON.stringify({
-          model: 'claude-3-sonnet-20240229',
-          max_tokens: 1000,
-          messages: newMessages.filter(msg => msg.role !== 'system').map(msg => ({
-            role: msg.role,
-            content: msg.content
-          })),
-          system: "You are a helpful assistant for blind users. Keep your responses clear, concise, and easy to understand through a screen reader."
+          model: 'gpt-4o', 
+          messages: [
+            systemMessage,
+            ...newMessages.filter(msg => msg.role !== 'system')
+          ],
         })
       });
+
+      if (!response.ok) {
+        // Improved error handling to show the actual status code
+        throw new Error(`API error: ${response.status} ${response.statusText}`);
+      }
       
       const data = await response.json();
       
       // Add response to chat
-      if (data.content && data.content[0] && data.content[0].text) {
-        setMessages([
-          ...newMessages,
-          { role: 'assistant', content: data.content[0].text }
+      if (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) {
+        const assistantMessage = data.choices[0].message.content;
+        setMessages(currentMessages => [
+          ...currentMessages,
+          { role: 'assistant', content: assistantMessage }
         ]);
         
-        // Provide response received vibration
+        speakMessage(assistantMessage);
+        
         Vibration.vibrate([200, 100, 300]);
       } else {
-        // Handle error
-        setMessages([
-          ...newMessages,
-          { role: 'assistant', content: 'Sorry, I encountered an error processing your request.' }
+        const errorMessage = 'Sorry, I encountered an error processing your request.';
+        setMessages(currentMessages => [
+          ...currentMessages,
+          { role: 'assistant', content: errorMessage }
         ]);
+        speakMessage(errorMessage);
       }
     } catch (error) {
       console.error('Error fetching response:', error);
-      setMessages([
-        ...newMessages,
-        { role: 'assistant', content: 'Sorry, I encountered an error. Please try again.' }
+      const errorMessage = 'Sorry, I encountered an error. Please try again.';
+      setMessages(currentMessages => [
+        ...currentMessages,
+        { role: 'assistant', content: errorMessage }
       ]);
+      speakMessage(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -207,10 +260,8 @@ const BrailleKeyboard = () => {
     
     // Provide mode-specific vibration feedback
     if (newMode === 'numbers') {
-      // Underscore-like vibration for Number Mode
       Vibration.vibrate(200);
     } else {
-      // Dot-like vibration for Alphabet Mode
       Vibration.vibrate(50);
     }
     
@@ -221,19 +272,8 @@ const BrailleKeyboard = () => {
     // Reset teaching lesson based on mode
     setCurrentLesson(newMode === 'alphabets' ? alphabetLessons[0] : numberLessons[0]);
   };
-
-  // Toggle between read and write modes
-  const toggleAppMode = () => {
-    const newMode = appMode === 'write' ? 'read' : 'write';
-    setAppMode(newMode);
-    
-    // Provide app mode switch vibration feedback
-    Vibration.vibrate([200, 100, 200]);
-    
-    // Reset dots when switching app modes
-    setDots([false, false, false, false, false, false]);
-    setCurrentDisplay('');
-  };
+  
+  // NOTE: toggleAppMode is removed as requested by the user.
 
   // Toggle teaching mode on/off
   const toggleTeachingMode = () => {
@@ -275,15 +315,12 @@ const BrailleKeyboard = () => {
 
   // Update the current display when changing input mode
   useEffect(() => {
-    // Reset display when changing modes
     setCurrentDisplay('');
   }, [inputMode]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar hidden />
-      
-     
       
       {/* Main Container - Landscape Layout */}
       <View style={styles.mainContainer}>
@@ -329,14 +366,16 @@ const BrailleKeyboard = () => {
           </Text>
         </TouchableOpacity>
         
+        {/* The 'Read mode/Write mode' button is now a 'Delete' button with dual functionality */}
         <TouchableOpacity 
           style={styles.topButton}
-          onPress={toggleAppMode}
-          accessibilityLabel="Switch between read mode and write mode"
+          onPress={deleteLastWord} 
+          onLongPress={clearAllText}
+          accessibilityLabel="Delete"
+          accessibilityHint="Tap to delete the last word. Long press to clear all text."
         >
           <Text style={styles.topButtonText}>
-            Button to Switch{'\n'}
-            Read mode/Write mode
+            Delete
           </Text>
         </TouchableOpacity>
       </View>
@@ -393,13 +432,6 @@ const BrailleKeyboard = () => {
               <Text style={styles.actionButtonText}>Add Space</Text>
             </TouchableOpacity>
             
-            {/* <TouchableOpacity 
-              style={[styles.actionButton, styles.sendButton]} 
-              onPress={submitToChatbot}
-              disabled={isLoading || typedText.trim() === ''}
-            >
-              <Text style={styles.sendButtonText}>Send Message</Text>
-            </TouchableOpacity> */}
           </View>
           
           {teachingMode && (
@@ -462,8 +494,9 @@ const styles = StyleSheet.create({
   },
   topButtonsContainer: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    justifyContent: 'space-around', // Re-centered the two buttons
     padding: 10,
+    width: '100%',
   },
   topButton: {
     backgroundColor: '#f0f0f0',
@@ -613,7 +646,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#ddd',
-    marginHorizontal: 20
+    marginHorizontal: 5
   },
   actionButtonText: {
     fontSize: 14,
